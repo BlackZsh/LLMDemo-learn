@@ -13,6 +13,7 @@ import sys
 from api.text_api import text_api
 from api.tts_api import tts_api
 from api.vision_api import vision_api
+from api.asr_api import asr_api
 from config.settings import settings
 
 # ==================== 配置日志 ====================
@@ -153,13 +154,18 @@ def synthesize_speech(text):
 
 def analyze_image(image, question):
     """
-    分析图片内容
+    分析图片内容（支持两种图片输入方式）
+    
+    根据官方文档：https://docs.siliconflow.cn/cn/userguide/capabilities/multimodal-vision
+    硅基流动支持：
+    1. 网络图片URL - 直接使用
+    2. 本地图片 - 自动转换为Base64编码
     
     Args:
         image: 图片文件（来自摄像头或上传）
                 - None: 没有图片
-                - str: 图片文件路径
-                - numpy.ndarray: 图片数组（摄像头拍摄）
+                - str: 图片文件路径（会自动Base64编码）
+                - numpy.ndarray: 图片数组（摄像头拍摄，会自动保存并编码）
         question: 用户对图片的提问
                  - 如果为空，默认描述图片内容
                  - 如果有内容，回答用户问题
@@ -167,11 +173,12 @@ def analyze_image(image, question):
     Returns:
         str: 图片分析结果
         
-    功能说明:
-        1. 支持摄像头拍照
-        2. 支持上传本地图片
-        3. 可以描述图片内容
-        4. 可以回答关于图片的问题
+    技术实现:
+        1. Gradio摄像头 → numpy数组 → 保存为临时文件
+        2. Gradio上传 → 文件路径 → 直接使用
+        3. vision_api 自动判断是URL还是本地路径
+        4. 本地路径会自动转换为 data:image/jpeg;base64,... 格式
+        5. 无需手动上传到网络，直接通过Base64传输
     """
     try:
         # ===== 步骤1: 检查图片是否存在 =====
@@ -183,8 +190,8 @@ def analyze_image(image, question):
         from PIL import Image
         
         if isinstance(image, np.ndarray):
-            # 如果是numpy数组（来自摄像头），先保存为临时文件
-            logger.info("处理摄像头图片")
+            # 摄像头拍照：numpy数组 → 临时文件 → Base64编码
+            logger.info("处理摄像头图片（将自动Base64编码）")
             
             # 转换为PIL Image
             pil_image = Image.fromarray(image)
@@ -198,9 +205,9 @@ def analyze_image(image, question):
             logger.info(f"摄像头图片已保存: {temp_image_path}")
             
         else:
-            # 如果是文件路径，直接使用
+            # 上传文件：直接使用路径（vision_api会自动Base64编码）
             image_source = image
-            logger.info(f"处理上传图片: {image_source}")
+            logger.info(f"处理上传图片: {image_source}（将自动Base64编码）")
         
         # ===== 步骤3: 构建提示词 =====
         if question and question.strip():
@@ -221,11 +228,153 @@ def analyze_image(image, question):
         )
         
         logger.info(f"图片分析完成，结果长度: {len(description)}")
+        
+        # 检查是否返回了403错误消息
+        if "403" in description or "Forbidden" in description:
+            return f"""❌ 图像识别权限错误 (403 Forbidden)
+
+当前模型：{settings.VLM_MODEL}
+
+🔧 快速修复方法：
+
+1. 打开项目目录中的 .env 文件
+2. 修改 VLM_MODEL 配置，尝试以下模型：
+
+   VLM_MODEL=Qwen/Qwen2-VL-7B-Instruct
+
+3. 保存后重启应用
+
+💡 更多解决方案：
+   - 运行诊断脚本：python test_vision_api.py
+   - 查看详细文档：VISION_FIX.md
+   - 检查 API 权限：https://cloud.siliconflow.cn/account/ak
+
+原始错误：{description}"""
+        
         return description
         
     except Exception as e:
         error_msg = f"❌ 图片分析失败: {str(e)}"
         logger.error(error_msg)
+        
+        # 特殊处理403错误
+        if "403" in str(e) or "Forbidden" in str(e):
+            return f"""❌ 图像识别权限错误 (403 Forbidden)
+
+当前模型：{settings.VLM_MODEL}
+
+🔧 快速修复方法：
+
+1. 打开 .env 文件
+2. 修改 VLM_MODEL 为：Qwen/Qwen2-VL-7B-Instruct
+3. 保存并重启应用
+
+💡 或运行诊断脚本：python test_vision_api.py
+
+原始错误：{str(e)}"""
+        
+        return error_msg
+
+
+# ==================== 语音识别功能 ====================
+
+def transcribe_audio(audio_file, language_choice):
+    """
+    语音识别（语音转文字）
+    
+    Args:
+        audio_file: 音频文件路径（来自麦克风录音或上传）
+                   - None: 没有音频
+                   - str: 音频文件路径
+        language_choice: 语言选择
+                        - "auto": 自动检测
+                        - "zh": 中文
+                        - "en": 英文
+                        - "ja": 日语
+                        - "yue": 粤语
+    
+    Returns:
+        str: 识别出的文字内容
+    """
+    try:
+        # ===== 步骤1: 检查音频是否存在 =====
+        if audio_file is None:
+            return "⚠️ 请先录制或上传音频文件"
+        
+        logger.info(f"处理音频文件: {audio_file}")
+        logger.info(f"语言设置: {language_choice}")
+        
+        # ===== 步骤2: 调用ASR API =====
+        logger.info("开始语音识别...")
+        
+        # 将语言选择映射到API参数
+        language_map = {
+            "自动检测": "auto",
+            "中文": "zh",
+            "英文": "en",
+            "日语": "ja",
+            "粤语": "yue"
+        }
+        language = language_map.get(language_choice, "auto")
+        
+        text = asr_api.transcribe(
+            audio_source=audio_file,
+            language=language,
+            response_format="text"
+        )
+        
+        logger.info(f"语音识别完成，文本长度: {len(text)}")
+        
+        # 返回格式化的结果
+        return f"""✅ 识别成功！
+
+📝 识别文本：
+
+{text}
+
+---
+📊 统计信息：
+- 文本长度：{len(text)} 字符
+- 语言设置：{language_choice}
+- 模型：{settings.SPEECH_MODEL}"""
+        
+    except Exception as e:
+        error_msg = f"❌ 语音识别失败: {str(e)}"
+        logger.error(error_msg)
+        
+        # 特殊处理常见错误
+        if "403" in str(e) or "Forbidden" in str(e):
+            return f"""❌ 语音识别权限错误 (403 Forbidden)
+
+当前模型：{settings.SPEECH_MODEL}
+
+🔧 可能的原因：
+1. API Key 没有访问语音识别模型的权限
+2. 账户余额不足
+
+💡 解决方法：
+1. 检查 API 权限：https://cloud.siliconflow.cn/account/ak
+2. 查看账户余额：https://cloud.siliconflow.cn/account/billing
+3. 尝试运行测试脚本：python test/test_asr_local.py
+
+原始错误：{str(e)}"""
+        
+        elif "400" in str(e) or "Bad Request" in str(e):
+            return f"""❌ 音频格式错误 (400 Bad Request)
+
+可能的原因：
+1. 音频文件格式不支持
+2. 音频文件损坏
+3. 文件大小超出限制
+
+💡 解决方法：
+1. 支持的格式：MP3, WAV, M4A, FLAC, OGG, WebM
+2. 建议文件大小：< 25MB
+3. 建议音频时长：< 30分钟
+4. 如果是录音，请检查麦克风是否正常
+
+原始错误：{str(e)}"""
+        
         return error_msg
 
 
@@ -525,6 +674,159 @@ def create_demo():
                 outputs=[result_output]
             )
         
+        # ==================== Tab 3: 语音识别 ====================
+        with gr.Tab("🎤 语音识别"):
+            with gr.Row():
+                # 左侧：音频输入
+                with gr.Column(scale=1):
+                    gr.Markdown("""
+                    ### 🎙️ 音频来源
+                    支持两种方式输入音频:
+                    """)
+                    
+                    with gr.Tabs():
+                        # 麦克风录音
+                        with gr.Tab("🎙️ 麦克风"):
+                            microphone_input = gr.Audio(
+                                label="麦克风录音",
+                                sources=["microphone"],  # 只允许麦克风
+                                type="filepath"
+                            )
+                        
+                        # 上传音频
+                        with gr.Tab("📁 上传音频"):
+                            audio_upload_input = gr.Audio(
+                                label="上传音频文件",
+                                sources=["upload"],  # 只允许上传
+                                type="filepath"
+                            )
+                    
+                    gr.Markdown("""
+                    ### 💡 使用说明
+                    1. **麦克风模式**:
+                       - 点击"🎙️麦克风"标签
+                       - 点击录音按钮开始录音
+                       - 再次点击停止录音
+                       - 自动开始识别
+                    
+                    2. **上传模式**:
+                       - 点击"📁上传音频"标签
+                       - 拖拽或点击上传音频文件
+                       - 支持 MP3, WAV, M4A, FLAC, OGG 等格式
+                    
+                    3. **语言设置**:
+                       - 在右侧选择音频语言
+                       - "自动检测"适合大多数场景
+                    
+                    ### ⚙️ 当前模型
+                    """)
+                    
+                    gr.Markdown(f"`{settings.SPEECH_MODEL}`")
+                    
+                    # 支持的格式说明
+                    with gr.Accordion("📖 支持的格式", open=False):
+                        gr.Markdown("""
+                        **音频格式**:
+                        - MP3 (.mp3)
+                        - WAV (.wav)
+                        - M4A (.m4a)
+                        - FLAC (.flac)
+                        - OGG (.ogg)
+                        - WebM (.webm)
+                        
+                        **建议**:
+                        - 文件大小: < 25MB
+                        - 音频时长: < 30分钟
+                        - 清晰的语音效果更好
+                        """)
+                
+                # 右侧：识别结果
+                with gr.Column(scale=1):
+                    gr.Markdown("### 🎯 识别结果")
+                    
+                    # 语言选择
+                    language_selector = gr.Radio(
+                        choices=["自动检测", "中文", "英文", "日语", "粤语"],
+                        value="自动检测",
+                        label="语言选择",
+                        info="选择音频的语言，推荐使用自动检测"
+                    )
+                    
+                    # 识别按钮
+                    transcribe_btn = gr.Button("🎤 开始识别", variant="primary", size="lg")
+                    
+                    # 结果显示
+                    transcribe_output = gr.Textbox(
+                        label="识别文本",
+                        lines=15,
+                        placeholder="识别结果将显示在这里...",
+                        show_copy_button=True  # 显示复制按钮
+                    )
+                    
+                    # 示例场景
+                    with gr.Accordion("📖 使用场景", open=False):
+                        gr.Markdown("""
+                        **常见应用**:
+                        - 📝 会议记录转文字
+                        - 🎓 课堂笔记整理
+                        - 📱 语音消息转文字
+                        - 🎬 视频字幕生成
+                        - 📞 电话录音转写
+                        
+                        **多语言支持**:
+                        - 🇨🇳 中文（普通话）
+                        - 🇺🇸 英文
+                        - 🇯🇵 日语
+                        - 🇭🇰 粤语
+                        - 其他语言请选择"自动检测"
+                        
+                        **提示**:
+                        - 背景噪音越少，识别越准确
+                        - 说话清晰比速度快更重要
+                        - 长音频会自动分段处理
+                        """)
+            
+            # ===== 事件绑定 =====
+            
+            # 定义统一的识别函数
+            def transcribe_with_source(microphone_audio, upload_audio, language):
+                """
+                根据音频来源进行识别
+                
+                Args:
+                    microphone_audio: 麦克风录音
+                    upload_audio: 上传的音频文件
+                    language: 语言选择
+                """
+                # 判断使用哪个音频源
+                if microphone_audio is not None:
+                    return transcribe_audio(microphone_audio, language)
+                elif upload_audio is not None:
+                    return transcribe_audio(upload_audio, language)
+                else:
+                    return "⚠️ 请先录音或上传音频文件"
+            
+            # 识别按钮点击事件
+            transcribe_btn.click(
+                fn=transcribe_with_source,
+                inputs=[microphone_input, audio_upload_input, language_selector],
+                outputs=[transcribe_output]
+            )
+            
+            # 麦克风录音完成后自动识别
+            microphone_input.stop_recording(
+                fn=lambda audio, lang: transcribe_audio(audio, lang) if audio is not None else "",
+                inputs=[microphone_input, language_selector],
+                outputs=[transcribe_output]
+            )
+            
+            # 上传音频后自动识别
+            audio_upload_input.change(
+                fn=lambda audio, lang: transcribe_audio(audio, lang) if audio is not None else "",
+                inputs=[audio_upload_input, language_selector],
+                outputs=[transcribe_output]
+            )
+        
         # ==================== 底部信息 ====================
         gr.Markdown("""
         ---
@@ -534,9 +836,10 @@ def create_demo():
         - [获取API Key](https://cloud.siliconflow.cn/account/ak)
         
         ### 🔧 技术栈
-        - **文本**: OpenAI兼容API (Chat Completions)
-        - **语音**: TTS API (Text-to-Speech)
-        - **视觉**: Vision Language Model (VLM)
+        - **文本对话**: OpenAI兼容API (Chat Completions)
+        - **语音合成**: TTS API (Text-to-Speech)
+        - **语音识别**: ASR API (Automatic Speech Recognition)
+        - **图像识别**: Vision Language Model (VLM)
         - **框架**: Gradio 4.0+ · Python 3.9+
         """)
     
@@ -564,8 +867,9 @@ def main():
         
         # ===== 3. 显示配置信息 =====
         logger.info(f"📝 文本模型: {settings.TEXT_MODEL}")
-        logger.info(f"🔊 语音模型: {settings.TTS_MODEL}")
-        logger.info(f"🖼️ 图像模型: {settings.VLM_MODEL}")
+        logger.info(f"🔊 语音合成: {settings.TTS_MODEL}")
+        logger.info(f"🎤 语音识别: {settings.SPEECH_MODEL}")
+        logger.info(f"🖼️ 图像识别: {settings.VLM_MODEL}")
         logger.info(f"🔗 API地址: {settings.SILICONFLOW_BASE_URL}")
         
     except ValueError as e:
@@ -583,10 +887,11 @@ def main():
     logger.info("=" * 60)
     
     demo.launch(
-        server_name="0.0.0.0",  # 允许外部访问
-        server_port=7862,        # 端口号
-        share=True,              # 创建公网链接（可选）
-        show_error=True          # 显示错误信息
+        server_name="127.0.0.1",
+        server_port=7862,
+        share=False,
+        show_error=True,
+        inbrowser=True
     )
 
 

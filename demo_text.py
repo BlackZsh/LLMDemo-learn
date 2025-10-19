@@ -304,10 +304,11 @@ def main():
     
     logger.info("🚀 启动 Gradio 服务...")
     demo.launch(
-        server_name="0.0.0.0",
+        server_name="127.0.0.1",  # 本地访问（最快）
         server_port=7860,
-        share=True,
-        show_error=True
+        share=False,              # 关闭公网分享（避免慢速）
+        show_error=True,
+        inbrowser=True            # 自动打开浏览器
     )
 
 

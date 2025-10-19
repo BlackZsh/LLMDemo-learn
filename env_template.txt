@@ -17,8 +17,13 @@ TTS_MODEL=fishaudio/fish-speech-1.5
 # 图像生成模型
 IMAGE_MODEL=stabilityai/stable-diffusion-3-5-large
 
-# 图像识别模型 (VLM)
-VLM_MODEL=OpenGVLab/InternVL2-26B
+# 图像识别模型 (VLM) - 官方文档：https://docs.siliconflow.cn/cn/userguide/capabilities/multimodal-vision
+# 推荐使用以下支持的模型：
+VLM_MODEL=Qwen/Qwen2-VL-7B-Instruct              # 默认推荐（稳定可用）
+# VLM_MODEL=Qwen/Qwen2.5-VL-72B-Instruct         # 高性能版本
+# VLM_MODEL=Pro/Qwen/Qwen2.5-VL-72B-Instruct     # Pro专业版
+# VLM_MODEL=THUDM/glm-4v-plus                    # GLM视觉模型
+# VLM_MODEL=deepseek-ai/DeepSeek-VL2             # DeepSeek视觉模型
 
 # 日志级别
 LOG_LEVEL=INFO
