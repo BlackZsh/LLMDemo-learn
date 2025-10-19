@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  siliconflow-demo:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: siliconflow-text-demo
+    ports:
+      - "7860:7860"
+    environment:
+      # API配置 - 必填
+      - SILICONFLOW_API_KEY=${SILICONFLOW_API_KEY}
+      
+      # 模型配置 - 可选
+      - TEXT_MODEL=${TEXT_MODEL:-Qwen/Qwen2.5-7B-Instruct}
+      - MAX_TOKENS=${MAX_TOKENS:-4096}
+      - TEMPERATURE=${TEMPERATURE:-0.7}
+      - TOP_P=${TOP_P:-0.7}
+      
+      # 日志配置
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    
+    restart: unless-stopped
+    
+    # 健康检查
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:7860')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    
+    # 资源限制
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '1'
+          memory: 1G
+    
+    # 日志配置
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  default:
+    name: siliconflow-network
+
